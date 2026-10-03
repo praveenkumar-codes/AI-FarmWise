@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="te" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI FarmWise — రైతు మిత్ర (Farmer Mobile App)</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen antialiased">
+  <div id="root">
+    <div class="max-w-md mx-auto min-h-screen flex items-center justify-center p-6 text-center">
+      <div class="space-y-2">
+        <div class="text-2xl font-black text-emerald-400 animate-pulse">🌱 AI FarmWise · రైతు మిత్ర</div>
+        <div class="text-xs text-slate-400">Loading your farm companion...</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (async function bootFarmerStandaloneApp() {
+      const files = [
+        './src/i18n/translations.js',
+        './src/screens/CropCycle.jsx',
+        './src/screens/WeatherMonitoring.jsx',
+        './src/screens/SoilIntelligence.jsx',
+        './src/screens/CropHealth.jsx',
+        './src/screens/PestRisk.jsx',
+        './src/screens/IrrigationManagement.jsx',
+        './src/screens/FertilizerManagement.jsx',
+        './src/screens/AIAssistant.jsx',
+        './src/screens/AIRecommendations.jsx',
+        './src/screens/ActionApproval.jsx',
+        './src/screens/Notifications.jsx',
+        './src/screens/FarmerProfile.jsx',
+        './src/screens/FarmManagement.jsx',
+        './src/screens/FieldManagement.jsx',
+        './src/screens/CropManagement.jsx',
+        './src/screens/IoTMonitoring.jsx',
+        './src/screens/CropPlanning.jsx',
+        './src/screens/FarmActivities.jsx',
+        './src/screens/YieldPrediction.jsx',
+        './src/screens/HarvestPlanning.jsx',
+        './src/screens/DroneMonitoring.jsx',
+        './src/screens/RoverMonitoring.jsx',
+        './src/screens/FarmRisk.jsx',
+        './src/screens/FarmHistory.jsx',
+        './src/screens/AnalyticsSettings.jsx',
+        './src/App.jsx'
+      ];
+
+      function stripModuleSyntax(src) {
+        return src
+          .replace(/^\s*import\s+[\s\S]*?from\s+['"][^'"]+['"];?\s*$/gm, '')
+          .replace(/^\s*export\s+default\s+function\s+/gm, 'function ')
+          .replace(/^\s*export\s+default\s+[A-Za-z0-9_]+;?\s*$/gm, '')
+          .replace(/^\s*export\s+\{[^}]*\};?\s*$/gm, '')
+          .replace(/^\s*export\s+(const|let|var|function|class)\s+/gm, '$1 ');
+      }
+
+      try {
+        const sources = await Promise.all(
+          files.map(async (f) => {
+            const res = await fetch(f + '?t=' + Date.now(), { cache: 'no-store' });
+            if (!res.ok) throw new Error(`Failed to load ${f}: HTTP ${res.status}`);
+            const text = await res.text();
+            return `\n// --- ${f} ---\n` + stripModuleSyntax(text);
+          })
+        );
+
+        const combinedSource = `
+          const { useState, useEffect, useCallback, useMemo, useRef } = React;
+          ${sources.join('\n')}
+          const root = ReactDOM.createRoot(document.getElementById('root'));
+          root.render(React.createElement(App));
+        `;
+
+        const compiled = Babel.transform(combinedSource, {
+          presets: ['react'],
+          filename: 'farmer-app-bundle.jsx'
+        }).code;
+
+        new Function('React', 'ReactDOM', compiled)(window.React, window.ReactDOM);
+      } catch (err) {
+        console.error('Farmer App Boot Error:', err);
+        document.getElementById('root').innerHTML =
+          '<div class="p-6 text-rose-400 font-mono text-xs">Boot Error: ' + err.message + '</div>';
+      }
+    })();
+  </script>
+</body>
+</html>
+

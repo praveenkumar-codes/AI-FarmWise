@@ -1,0 +1,11 @@
+{
+  "name": "ai-farmwise-monorepo",
+  "private": true,
+  "version": "1.0.0",
+  "description": "AI FarmWise — Dual-Port Farmer App (5173) + Admin Command Center (5174) + FastAPI Backend (8000)",
+  "scripts": {
+    "dev:farmer": "cd client/farmer-app && npm run dev",
+    "dev:admin": "cd client/admin-dashboard && npm run dev",
+    "dev:backend": "python -m uvicorn server.app.main:app --reload --host 0.0.0.0 --port 8000"
+  }
+}

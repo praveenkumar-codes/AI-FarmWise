@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI FarmWise — Admin Command Center (Port 5174)</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen antialiased">
+  <div id="root">
+    <div class="min-h-screen flex items-center justify-center p-6 text-center">
+      <div class="space-y-2">
+        <div class="text-2xl font-black text-cyan-400 animate-pulse">🛰️ AI FarmWise Admin Command Center</div>
+        <div class="text-xs text-slate-400">Initializing Regional Fleet Matrix, ESP32 UART Stream & MAVLink 2.0 Dispatcher...</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (async function bootAdminStandaloneApp() {
+      function stripModuleSyntax(src) {
+        return src
+          .replace(/^\s*import\s+[\s\S]*?from\s+['"][^'"]+['"];?\s*$/gm, '')
+          .replace(/^\s*export\s+default\s+function\s+/gm, 'function ')
+          .replace(/^\s*export\s+default\s+[A-Za-z0-9_]+;?\s*$/gm, '')
+          .replace(/^\s*export\s+\{[^}]*\};?\s*$/gm, '')
+          .replace(/^\s*export\s+(const|let|var|function|class)\s+/gm, '$1 ');
+      }
+
+      try {
+        const res = await fetch('./src/App.jsx', { cache: 'no-store' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const raw = await res.text();
+        const combinedSource = `
+          const { useState, useEffect, useCallback, useMemo, useRef } = React;
+          ${stripModuleSyntax(raw)}
+          const root = ReactDOM.createRoot(document.getElementById('root'));
+          root.render(React.createElement(App));
+        `;
+        const compiled = Babel.transform(combinedSource, {
+          presets: ['react'],
+          filename: 'admin-dashboard-bundle.jsx'
+        }).code;
+        new Function('React', 'ReactDOM', compiled)(window.React, window.ReactDOM);
+      } catch (err) {
+        console.error('Admin App Boot Error:', err);
+        document.getElementById('root').innerHTML =
+          '<div class="p-6 text-rose-400 font-mono text-xs">Boot Error: ' + err.message + '</div>';
+      }
+    })();
+  </script>
+</body>
+</html>

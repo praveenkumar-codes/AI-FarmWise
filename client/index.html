@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI FarmWise — Human-in-the-Loop Agentic AI Farm Decision Support Platform</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  </head>
+  <body class="bg-slate-950 text-slate-100 antialiased">
+    <div id="root">
+      <div class="min-h-screen flex items-center justify-center text-slate-400 text-sm font-mono">
+        Loading AI FarmWise Dashboard...
+      </div>
+    </div>
+
+    <script>
+      (async function bootFarmWiseApp() {
+        const rootEl = document.getElementById('root');
+        try {
+          const base = window.location.pathname.startsWith('/ui') ? '/ui' : '';
+          const files = [
+            '/src/i18n/en.js',
+            '/src/i18n/te.js',
+            '/src/i18n/hi.js',
+            '/src/services/apiClient.js',
+            '/src/services/farmService.js',
+            '/src/context/AuthContext.jsx',
+            '/src/context/LanguageContext.jsx',
+            '/src/components/common/Button.jsx',
+            '/src/components/common/StatusBadge.jsx',
+            '/src/components/common/MetricCard.jsx',
+            '/src/components/layout/Navbar.jsx',
+            '/src/components/layout/Sidebar.jsx',
+            '/src/components/dashboard/SoilGauge.jsx',
+            '/src/components/dashboard/MicroclimateWidget.jsx',
+            '/src/components/dashboard/SerialMonitorConsole.jsx',
+            '/src/components/approvals/ActionCard.jsx',
+            '/src/components/approvals/ApprovalCenter.jsx',
+            '/src/components/assistant/AssistantDrawer.jsx',
+            '/src/pages/Dashboard.jsx',
+            '/src/pages/ApprovalCenter.jsx',
+            '/src/pages/MultiAgentMesh.jsx',
+            '/src/pages/Monitoring.jsx',
+            '/src/pages/Admin.jsx',
+            '/src/components/FarmerMobileApp.jsx',
+            '/src/components/AdminCommandCenter.jsx',
+            '/src/App.jsx',
+          ];
+
+          const chunks = [
+            'const { useState, useEffect, useCallback, createContext, useContext } = window.React;',
+          ];
+
+          for (const file of files) {
+            const res = await fetch(base + file, { cache: 'no-store' });
+            if (!res.ok) {
+              throw new Error('Failed to load ' + file + ' (HTTP ' + res.status + ')');
+            }
+            let src = await res.text();
+
+            // Remove all ES import lines and export default lines; convert named exports to top-level declarations
+            src = src
+              .replace(/^\s*import\s+[\s\S]*?from\s+['"][^'"]+['"];?\s*$/gm, '')
+              .replace(/^\s*import\s+['"][^'"]+['"];?\s*$/gm, '')
+              .replace(/^\s*export\s+default\s+[\s\S]*?;?\s*$/gm, '')
+              .replace(/^\s*export\s+(const|let|var|function|async\s+function)\s+/gm, '$1 ')
+              .replace(/import\.meta\.env/g, '({})')
+              .replace(/typeof\s+import\.meta/g, '"object"');
+
+            chunks.push('// --- ' + file + ' ---\n' + src);
+          }
+
+          chunks.push(
+            'const __root = window.ReactDOM.createRoot(document.getElementById("root"));\n' +
+            '__root.render(window.React.createElement(App));'
+          );
+
+          const combinedSource = chunks.join('\n\n');
+          const compiled = window.Babel.transform(combinedSource, {
+            filename: 'farmwise_bundle.jsx',
+            presets: ['react'],
+          }).code;
+
+          const runFn = new Function(compiled);
+          runFn();
+        } catch (err) {
+          console.error(err);
+          rootEl.innerHTML =
+            '<div style="padding:24px;color:#fecdd3;background:#4c0519;font-family:monospace;font-size:13px;white-space:pre-wrap;">' +
+            '<strong>Frontend Boot Error:</strong> ' +
+            (err && err.message ? err.message + '\n' : '') +
+            (err && err.stack ? err.stack : String(err)) +
+            '</div>';
+        }
+      })();
+    </script>
+  </body>
+</html>

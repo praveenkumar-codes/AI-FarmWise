@@ -1,0 +1,54 @@
+# Dependencies & Virtual Environments
+node_modules/
+**/node_modules/
+venv/
+.venv/
+env/
+ENV/
+
+# Python Bytecode & Cache
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Build & Distribution Artifacts
+build/
+dist/
+**/build/
+**/dist/
+.vite/
+*.egg-info/
+.eggs/
+
+# Environment Variables, API Keys, Passwords & Secrets
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+*.pem
+*.key
+*secret*
+*credentials*
+
+# Local SQLite Databases & Logs
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.log
+
+# IDE & OS Files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

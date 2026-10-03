@@ -1,0 +1,1 @@
+"""AI FarmWise server package."""
