@@ -621,7 +621,7 @@ class FarmMemory:
             select(TelemetryLog).where(TelemetryLog.farm_id == farmer_id).order_by(TelemetryLog.id.desc()).limit(5)
         ).all()
         recent_activities = db.scalars(
-            select(FarmActivity).where(FarmActivity.farmer_id == farmer_id).order_by(FarmActivity.id.desc()).limit(5)
+            select(FarmActivity).where(FarmActivity.farmer_id == farmer_id).order_by(FarmActivity.id.desc()).limit(25)
         ).all()
         recent_scans = db.scalars(
             select(CropHealthScan).where(CropHealthScan.farmer_id == farmer_id).order_by(CropHealthScan.id.desc()).limit(3)
@@ -642,7 +642,17 @@ class FarmMemory:
             select(AgentRun).where(AgentRun.farmer_id == farmer_id).order_by(AgentRun.id.desc()).limit(3)
         ).all()
 
-        irrigated_recently = any("IRRIGATION" in (a.activity_type or "").upper() for a in recent_activities)
+        # Only count REAL irrigation events (approved dispatch / verified outcome / manual logs).
+        # AGENT_RUN_* rows are the agent's own run summaries and must not be mistaken for irrigation.
+        irrigation_events = [
+            a
+            for a in recent_activities
+            if "IRRIGATION" in (a.activity_type or "").upper()
+            and not (a.activity_type or "").upper().startswith("AGENT_RUN_")
+        ]
+        irrigated_recently = bool(irrigation_events)
+        moisture_series = [float(t.soil_moisture) for t in recent_telemetry]
+        moisture_trend = round(moisture_series[0] - moisture_series[-1], 1) if len(moisture_series) >= 2 else 0.0
 
         return {
             "farmer_id": farmer_id,
@@ -658,13 +668,19 @@ class FarmMemory:
             "growth_stage": active_cycle.current_stage if active_cycle else meta["growth_stage"],
             "telemetry_points_in_memory": len(recent_telemetry),
             "last_recorded_moisture": float(recent_telemetry[0].soil_moisture) if recent_telemetry else float(meta["default_moisture"]),
+            "moisture_trend_vwc": moisture_trend,
             "recent_irrigation_in_memory": irrigated_recently,
+            "last_irrigation_event": irrigation_events[0].title if irrigation_events else None,
             "recent_activities": [a.title for a in recent_activities[:3]],
             "recent_crop_scans_count": len(recent_scans),
             "latest_scan_issue": recent_scans[0].possible_issue if recent_scans else None,
             "open_tasks_count": len(open_tasks),
             "pending_action_ids": [a.id for a in pending_actions],
             "past_agent_runs_count": len(past_runs),
+            "prior_runs": [
+                {"run_id": r.run_code, "goal": r.goal, "status": r.status, "summary": (r.summary or "")[:160]}
+                for r in past_runs
+            ],
         }
 
     def record_memory_event(
@@ -947,6 +963,7 @@ class AgentEvaluator:
         remaining_steps: List[Dict[str, str]],
         context_bag: Dict[str, Any],
         emergency_stop_active: bool,
+        memory: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         # 1. Check if tool failed or reported hardware unavailable -> REPLAN
         status = str(tool_output.get("status") or "OK")
@@ -973,6 +990,19 @@ class AgentEvaluator:
                 "reason": f"RoverTool unavailable ({tool_output.get('reason')}); replanning to FarmerTaskTool.",
                 "failed_tool": "create_rover_mission",
             }
+
+        # 1b. OBSERVATION-DRIVEN PLAN ADAPTATION (the plan is not fixed: what the agent
+        # observes changes which tools it runs next).
+        if tool_name == "get_soil_status":
+            adaptation = self._adapt_after_soil(
+                goal_type=goal_type,
+                soil=tool_output,
+                remaining_steps=remaining_steps,
+                context_bag=context_bag,
+                memory=memory or {},
+            )
+            if adaptation:
+                return adaptation
 
         # 2. Check irrigation evaluation outcome
         if tool_name == "evaluate_irrigation":
@@ -1026,6 +1056,125 @@ class AgentEvaluator:
             "evaluator_status": "COMPLETED",
             "satisfied": True,
             "reason": "All required observations collected and evaluated; goal is satisfied.",
+        }
+
+    @staticmethod
+    def _adapt_after_soil(
+        *,
+        goal_type: str,
+        soil: Dict[str, Any],
+        remaining_steps: List[Dict[str, Any]],
+        context_bag: Dict[str, Any],
+        memory: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Decides, from the soil observation itself, whether the remaining plan must change.
+        Returns None when the current plan is still appropriate."""
+        queued = {s["tool"] for s in remaining_steps}
+        have_history = "get_crop_history" in context_bag or "get_crop_history" in queued
+        moisture = soil.get("soil_moisture")
+        crit = float(soil.get("critical_threshold") or 30.0)
+        degraded = str(soil.get("status")) == "DEGRADED_FALLBACK"
+        inject: List[Dict[str, Any]] = []
+        notes: List[str] = []
+
+        # Rule 1: Contradictory evidence (ESP32 vs satellite disagree strongly) -> gather history.
+        esp = soil.get("esp32_moisture")
+        sat = soil.get("satellite_soil_moisture")
+        contradictory = (
+            not degraded
+            and esp is not None
+            and sat is not None
+            and abs(float(esp) - float(sat)) >= 12.0
+        )
+        if contradictory and not have_history:
+            inject.append(
+                {
+                    "tool": "get_crop_history",
+                    "reason": f"ESP32 ({esp}%) and satellite ({sat}%) disagree by >=12% VWC; corroborating with field history",
+                    "position": "next",
+                }
+            )
+            notes.append("Contradictory soil sources detected")
+            have_history = True
+
+        # Rule 2: Low-confidence fallback reading -> corroborate with history.
+        if degraded and not have_history:
+            inject.append(
+                {
+                    "tool": "get_crop_history",
+                    "reason": "Soil reading is a low-confidence fallback (ESP32 offline); corroborating with history",
+                    "position": "next",
+                }
+            )
+            notes.append("Low-confidence soil reading")
+
+        # Rule 3: Enough evidence already -> stop early (no need for weather / irrigation math).
+        if (
+            goal_type == "IRRIGATION"
+            and not degraded
+            and not contradictory
+            and moisture is not None
+            and float(moisture) >= crit + 15.0
+        ):
+            return {
+                "evaluator_status": "COMPLETED",
+                "satisfied": True,
+                "approval_required": False,
+                "drop_remaining": True,
+                "reason": (
+                    f"Enough evidence: soil moisture {moisture}% is well above the {crit}% threshold for this crop stage. "
+                    "No irrigation needed, so weather and irrigation tools were skipped."
+                ),
+            }
+
+        # Rule 4: Memory says we irrigated recently, yet soil is still dry -> suspect a fault.
+        if (
+            goal_type in ("IRRIGATION", "SENSOR_FAILURE")
+            and moisture is not None
+            and float(moisture) < crit
+            and memory.get("recent_irrigation_in_memory")
+        ):
+            inject.append(
+                {
+                    "tool": "create_farmer_task",
+                    "reason": "Memory shows a recent irrigation but moisture is still below threshold; checking for a line/valve fault",
+                    "position": "next",
+                    "args": {
+                        "title": f"Check irrigation line/valve before re-irrigating (moisture still {moisture}%)",
+                        "description": (
+                            f"Recent irrigation in memory ('{memory.get('last_irrigation_event')}') but soil moisture is still "
+                            f"{moisture}% (< {crit}%). Inspect for leaks or a blocked valve."
+                        ),
+                        "category": "IRRIGATION_FAULT_INSPECTION",
+                        "priority": "HIGH",
+                    },
+                }
+            )
+            notes.append("Recent irrigation did not hold moisture")
+
+        # Rule 5: Crop-stress investigation finds a moisture deficit -> notify, as a likely contributor.
+        if goal_type == "CROP_STRESS" and moisture is not None and float(moisture) < crit:
+            inject.append(
+                {
+                    "tool": "create_notification",
+                    "reason": "Moisture deficit observed; it is a likely contributor to crop stress",
+                    "position": "before:create_farmer_task",
+                    "args": {
+                        "title": "Low soil moisture may be adding to crop stress",
+                        "message": f"Soil moisture is {moisture}% (target >= {crit}%). Consider irrigation after inspection.",
+                        "category": "CROP_STRESS_CONTRIBUTOR",
+                    },
+                }
+            )
+            notes.append("Moisture deficit contributes to stress")
+
+        if not inject:
+            return None
+        return {
+            "evaluator_status": "CONTINUE",
+            "satisfied": False,
+            "inject_steps": inject,
+            "reason": "Plan adapted from soil observation: " + "; ".join(notes) + ".",
         }
 
     def evaluate_action_verification(
@@ -1361,6 +1510,9 @@ class FarmManagerAgent:
                     exec_kwargs["description"] = "; ".join(harv.get("preparation_tasks") or ["Prepare harvest bags and check market yard."])
                     exec_kwargs["category"] = "HARVEST_PREPARATION"
 
+            if step_spec.get("args"):
+                exec_kwargs.update(step_spec["args"])
+
             tool_out = await capability_registry.execute_tool(
                 db,
                 tool_name,
@@ -1408,9 +1560,70 @@ class FarmManagerAgent:
                 remaining_steps=remaining_steps,
                 context_bag=context_bag,
                 emergency_stop_active=memory_ctx["emergency_stop_active"],
+                memory=memory_ctx,
             )
             final_evaluator = eval_out
             eval_status = eval_out["evaluator_status"]
+
+            # 5b. OBSERVATION-DRIVEN PLAN ADAPTATION (insert / drop steps based on what was observed)
+            injected = eval_out.get("inject_steps") or []
+            if injected or eval_out.get("drop_remaining"):
+                current_state = self._record_state(
+                    state_history,
+                    "REPLANNING",
+                    eval_out["reason"],
+                )
+                if eval_out.get("drop_remaining") and remaining_steps:
+                    dropped = [s["tool"] for s in remaining_steps]
+                    remaining_steps = []
+                    replans.append(
+                        {
+                            "type": "OBSERVATION_DRIVEN",
+                            "from_tool": tool_name,
+                            "to_tool": "(stop early)",
+                            "dropped_tools": dropped,
+                            "reason": eval_out["reason"],
+                        }
+                    )
+                    trace_events.append(
+                        {
+                            "stage": "REPLANNING",
+                            "label": f"Plan adapted: skipped {', '.join(dropped)}",
+                            "detail": eval_out["reason"],
+                        }
+                    )
+                next_idx = 0
+                for inj in injected:
+                    already = any(
+                        s["tool"] == inj["tool"] and (s.get("args") or {}) == (inj.get("args") or {})
+                        for s in remaining_steps
+                    )
+                    if already:
+                        continue
+                    new_step = {"tool": inj["tool"], "reason": inj["reason"], "args": inj.get("args") or {}}
+                    pos = str(inj.get("position") or "next")
+                    if pos.startswith("before:"):
+                        anchor = pos.split(":", 1)[1]
+                        idx = next((i for i, s in enumerate(remaining_steps) if s["tool"] == anchor), len(remaining_steps))
+                        remaining_steps.insert(idx, new_step)
+                    else:
+                        remaining_steps.insert(next_idx, new_step)
+                        next_idx += 1
+                    replans.append(
+                        {
+                            "type": "OBSERVATION_DRIVEN",
+                            "from_tool": tool_name,
+                            "to_tool": inj["tool"],
+                            "reason": inj["reason"],
+                        }
+                    )
+                    trace_events.append(
+                        {
+                            "stage": "REPLANNING",
+                            "label": f"Plan adapted: +{inj['tool']}",
+                            "detail": inj["reason"],
+                        }
+                    )
 
             # 6. HANDLE REPLANNING IF REQUIRED
             if eval_status == "REPLAN":
@@ -1807,16 +2020,52 @@ class FarmManagerAgent:
         actor: str = "farmer",
         dispatch_ref: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
-        """Updates any AgentRun waiting on `action_id` when the farmer/admin approves or rejects."""
-        run = db.scalars(
+        """Updates every AgentRun waiting on `action_id` when the farmer/admin approves or rejects.
+        (Several runs can be linked to the same pending action because the approval tool
+        reuses an existing PENDING_APPROVAL proposal instead of duplicating it.)"""
+        waiting = db.scalars(
             select(AgentRun)
-            .where(AgentRun.action_id == action_id)
+            .where(AgentRun.action_id == action_id, AgentRun.status == "AWAITING_APPROVAL")
             .order_by(AgentRun.id.desc())
-            .limit(1)
-        ).first()
-        if run is None:
+        ).all()
+        if not waiting:
+            latest = db.scalars(
+                select(AgentRun).where(AgentRun.action_id == action_id).order_by(AgentRun.id.desc()).limit(1)
+            ).first()
+            waiting = [latest] if latest is not None else []
+        if not waiting:
             return None
 
+        if decision_status == ActionStatus.APPROVED.value:
+            first = waiting[0]
+            self.memory.record_memory_event(
+                db,
+                farmer_id=first.farmer_id,
+                field_id=first.field_id,
+                activity_type="IRRIGATION_DISPATCHED",
+                title=f"Irrigation dispatched after approval ({action_id})",
+                notes=f"Approved by {actor}; dispatch ref {dispatch_ref or 'MAV-ACK'}. Awaiting telemetry verification.",
+                data_source="FARMER APPROVAL",
+            )
+
+        result: Optional[Dict[str, Any]] = None
+        for run in waiting:
+            out = self._apply_decision_to_run(
+                db, run, action_id=action_id, decision_status=decision_status, actor=actor, dispatch_ref=dispatch_ref
+            )
+            result = result or out
+        return result
+
+    def _apply_decision_to_run(
+        self,
+        db: Session,
+        run: AgentRun,
+        *,
+        action_id: str,
+        decision_status: str,
+        actor: str,
+        dispatch_ref: Optional[str],
+    ) -> Dict[str, Any]:
         hist = list(run.state_history or [])
         trace = dict(run.workflow_trace or {})
         events = list(trace.get("trace_events") or [])
@@ -1835,6 +2084,17 @@ class FarmManagerAgent:
                 "dispatch_ref": dispatch_ref,
                 "decided_by": actor,
                 "verification_status": "PENDING_TELEMETRY_VERIFICATION",
+                "dispatched_at": iso(utcnow()),
+                "dispatched_epoch": time.time(),
+                "baseline_telemetry_id": (
+                    db.scalars(
+                        select(TelemetryLog.id)
+                        .where(TelemetryLog.farm_id == run.farmer_id)
+                        .order_by(TelemetryLog.id.desc())
+                        .limit(1)
+                    ).first()
+                    or 0
+                ),
             }
             events.append(
                 {
@@ -1879,6 +2139,7 @@ class FarmManagerAgent:
         *,
         run_id: Any,
         new_soil_moisture: Optional[float] = None,
+        log_telemetry: bool = True,
     ) -> Dict[str, Any]:
         """Closed-Loop Action Verification (Requirement 13 & 23):
         Checks post-action soil telemetry after irrigation execution:
@@ -1890,8 +2151,6 @@ class FarmManagerAgent:
             run = db.get(AgentRun, int(run_id))
         if run is None:
             run = db.scalars(select(AgentRun).where(AgentRun.run_code == str(run_id)).limit(1)).first()
-        if run is None:
-            run = db.scalars(select(AgentRun).order_by(AgentRun.id.desc()).limit(1)).first()
         if run is None:
             raise ValueError(f"AgentRun '{run_id}' not found")
 
@@ -1906,29 +2165,52 @@ class FarmManagerAgent:
                 pre_moisture = float(tr["soil_moisture"])
                 break
 
-        # If new_soil_moisture was provided, log it to TelemetryLog; otherwise read latest TelemetryLog
+        # If new_soil_moisture was provided, log it to TelemetryLog; otherwise use ONLY telemetry
+        # that arrived after the action was dispatched (never fabricate an outcome).
         if new_soil_moisture is not None:
             post_moisture = round(float(new_soil_moisture), 1)
-            db.add(
-                TelemetryLog(
-                    farm_id=fid,
-                    device_id=meta["device_id"],
-                    soil_moisture=post_moisture,
-                    soil_ph=float(meta["chem_defaults"]["soil_ph"]),
-                    soil_temperature=float(meta["chem_defaults"]["soil_temperature"]),
-                    nitrogen=float(meta["chem_defaults"]["nitrogen"]),
-                    phosphorus=float(meta["chem_defaults"]["phosphorus"]),
-                    potassium=float(meta["chem_defaults"]["potassium"]),
-                    synthesized_fields=["soil_ph", "soil_temperature", "nitrogen", "phosphorus", "potassium"],
-                    created_at=utcnow(),
+            if log_telemetry:
+                db.add(
+                    TelemetryLog(
+                        farm_id=fid,
+                        device_id=meta["device_id"],
+                        soil_moisture=post_moisture,
+                        soil_ph=float(meta["chem_defaults"]["soil_ph"]),
+                        soil_temperature=float(meta["chem_defaults"]["soil_temperature"]),
+                        nitrogen=float(meta["chem_defaults"]["nitrogen"]),
+                        phosphorus=float(meta["chem_defaults"]["phosphorus"]),
+                        potassium=float(meta["chem_defaults"]["potassium"]),
+                        synthesized_fields=["soil_ph", "soil_temperature", "nitrogen", "phosphorus", "potassium"],
+                        created_at=utcnow(),
+                    )
                 )
-            )
-            db.flush()
+                db.flush()
         else:
+            baseline_id = int((run.result or {}).get("baseline_telemetry_id") or 0)
             latest_t = db.scalars(
-                select(TelemetryLog).where(TelemetryLog.farm_id == fid).order_by(TelemetryLog.id.desc()).limit(1)
+                select(TelemetryLog)
+                .where(TelemetryLog.farm_id == fid, TelemetryLog.id > baseline_id)
+                .order_by(TelemetryLog.id.desc())
+                .limit(1)
             ).first()
-            post_moisture = float(latest_t.soil_moisture) if latest_t else round(pre_moisture + 16.5, 1)
+            if latest_t is None:
+                trace = dict(run.workflow_trace or {})
+                events = list(trace.get("trace_events") or [])
+                if not events or events[-1].get("label") != "Awaiting fresh telemetry":
+                    events.append(
+                        {
+                            "stage": "VERIFYING",
+                            "label": "Awaiting fresh telemetry",
+                            "detail": "No soil reading has arrived since the action was dispatched; verification will run when it does.",
+                        }
+                    )
+                    trace["trace_events"] = events
+                    run.workflow_trace = trace
+                    run.updated_at = utcnow()
+                    db.commit()
+                    db.refresh(run)
+                return self.serialize_agent_run(run)
+            post_moisture = round(float(latest_t.soil_moisture), 1)
 
         crit = float(meta["critical_threshold"])
         verdict = self.evaluator.evaluate_action_verification(
@@ -2043,6 +2325,49 @@ class FarmManagerAgent:
         db.commit()
         db.refresh(run)
         return self.serialize_agent_run(run)
+
+    async def auto_verify_from_telemetry(
+        self,
+        db: Session,
+        *,
+        farm_id: int,
+        soil_moisture: float,
+    ) -> List[Dict[str, Any]]:
+        """Called whenever new soil telemetry is ingested. Re-evaluates every run of this farm that
+        is waiting in VERIFYING. Irrigation needs time to soak in, so a non-improving reading only
+        triggers failure/replanning after AGENT_VERIFY_TIMEOUT_SECONDS (default 900s)."""
+        timeout_s = float(os.getenv("AGENT_VERIFY_TIMEOUT_SECONDS", "900"))
+        runs = db.scalars(
+            select(AgentRun).where(AgentRun.farmer_id == farm_id, AgentRun.status == "VERIFYING")
+        ).all()
+        out: List[Dict[str, Any]] = []
+        for run in runs:
+            meta = get_farmer_meta(run.farmer_id)
+            pre = float(meta["default_moisture"])
+            for tr in run.tool_results or []:
+                if tr.get("tool") == "get_soil_status" and tr.get("soil_moisture") is not None:
+                    pre = float(tr["soil_moisture"])
+                    break
+            verdict = self.evaluator.evaluate_action_verification(
+                pre_moisture=pre,
+                post_moisture=float(soil_moisture),
+                critical_threshold=float(meta["critical_threshold"]),
+            )
+            res = dict(run.result or {})
+            elapsed = time.time() - float(res.get("dispatched_epoch") or time.time())
+            if verdict["verified"] or elapsed >= timeout_s:
+                out.append(
+                    await self.verify_action_outcome(
+                        db, run_id=run.id, new_soil_moisture=float(soil_moisture), log_telemetry=False
+                    )
+                )
+            else:
+                res["last_observed_moisture"] = round(float(soil_moisture), 1)
+                res["verification_wait_seconds"] = int(elapsed)
+                run.result = res
+                run.updated_at = utcnow()
+                db.commit()
+        return out
 
     @staticmethod
     def serialize_agent_run(run: AgentRun) -> Dict[str, Any]:

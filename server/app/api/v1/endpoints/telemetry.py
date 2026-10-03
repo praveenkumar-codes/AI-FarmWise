@@ -183,6 +183,18 @@ async def ingest_telemetry(
     db.commit()
     db.refresh(telemetry_row)
 
+    # Closed-loop telemetry verification: automatically verify any AgentRun waiting in VERIFYING state
+    try:
+        from app.agents.farm_manager.farm_manager_agent import farm_manager_agent
+
+        await farm_manager_agent.auto_verify_from_telemetry(
+            db,
+            farm_id=farm.id,
+            soil_moisture=exact_moisture,
+        )
+    except Exception:
+        pass
+
     return {
         "status": "ok",
         "telemetry": serialize_telemetry(telemetry_row),
