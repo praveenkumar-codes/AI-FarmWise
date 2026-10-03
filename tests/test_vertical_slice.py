@@ -597,3 +597,97 @@ def test_agentic_ai_ten_mandatory_scenarios():
     assert estop_run["status"] == "EMERGENCY_STOPPED"
 
 
+def test_farm_reports_and_analytics_module() -> None:
+    """Verify all 12 Farm Reports & Analytics endpoints, filters, explainable Farm Health, and CSV export."""
+    client = TestClient(app)
+    # Seed a few telemetry & agent runs so all report tables have live rows
+    client.post(
+        "/api/v1/telemetry",
+        json={"device_id": "esp32_zone_01", "soil_moisture": 19.2, "adc_raw": 3610, "voltage": 2.91},
+    )
+    client.post(
+        "/api/v1/agent/run",
+        json={"farmer_id": 1, "goal": "When should I harvest?", "scenario": "HARVEST"},
+    )
+
+    # 1. Overview + Explainable Farm Health
+    ov = client.get("/api/v1/reports/overview?date_range=7d")
+    assert ov.status_code == 200
+    ov_data = ov.json()
+    assert ov_data["total_farmers"] == 5
+    assert ov_data["total_fields"] >= 5
+    assert "farm_health" in ov_data
+    assert ov_data["farm_health"]["overall_status"] in ("Needs Attention", "Moderate", "Good")
+    assert "soil" in ov_data["farm_health"]["components"]
+
+    # 2. Farmer-Wise Report (includes My Farm Summary: What happened? What should I do? Why?)
+    fr = client.get("/api/v1/reports/farmers/1")
+    assert fr.status_code == 200
+    fr_data = fr.json()
+    assert fr_data["farmer"]["id"] == 1
+    assert "what_happened" in fr_data["my_farm_summary"]
+    assert "what_should_i_do" in fr_data["my_farm_summary"]
+    assert "why" in fr_data["my_farm_summary"]
+
+    # 3. Field-Wise Report
+    fl = client.get("/api/v1/reports/fields/1")
+    assert fl.status_code == 200
+    assert "soil_trend" in fl.json()
+
+    # 4. Soil Analytics
+    so = client.get("/api/v1/reports/soil?farmer_id=1")
+    assert so.status_code == 200
+    so_data = so.json()
+    assert isinstance(so_data["series"], list) and len(so_data["series"]) >= 1
+    assert "current_moisture" in so_data and "previous_moisture" in so_data
+
+    # 5. Weather Analytics
+    we = client.get("/api/v1/reports/weather")
+    assert we.status_code == 200
+    assert len(we.json()["stations"]) == 5
+
+    # 6. Crop Report
+    cr = client.get("/api/v1/reports/crops")
+    assert cr.status_code == 200
+    assert cr.json()["total_crops"] >= 5
+
+    # 7. Irrigation Report
+    ir = client.get("/api/v1/reports/irrigation")
+    assert ir.status_code == 200
+    assert "irrigation_timeline" in ir.json()
+
+    # 8. AI / Agent Performance Analytics
+    ag = client.get("/api/v1/reports/agents")
+    assert ag.status_code == 200
+    ag_data = ag.json()
+    assert ag_data["total_agent_runs"] >= 1
+    assert "most_used_tools" in ag_data
+    assert "agent_activity_timeline" in ag_data
+
+    # 9. Recommendation History with filters
+    rc = client.get("/api/v1/reports/recommendations?farmer_id=1&crop=Rice")
+    assert rc.status_code == 200
+    assert "recommendations" in rc.json()
+
+    # 10. Task Analytics
+    tk = client.get("/api/v1/reports/tasks")
+    assert tk.status_code == 200
+    assert "open_tasks" in tk.json() and "completed_tasks" in tk.json()
+
+    # 11. Alert Analytics
+    al = client.get("/api/v1/reports/alerts")
+    assert al.status_code == 200
+    assert "weather_alerts" in al.json() and "soil_alerts" in al.json()
+
+    # 12. CSV & Printable HTML Export
+    csv_res = client.get("/api/v1/reports/export?format=csv&date_range=30d")
+    assert csv_res.status_code == 200
+    assert "text/csv" in csv_res.headers.get("content-type", "")
+    assert "=== 1. FARM REPORT OVERVIEW ===" in csv_res.text
+
+    html_res = client.get("/api/v1/reports/export?format=html")
+    assert html_res.status_code == 200
+    assert "AI FarmWise" in html_res.text
+
+
+

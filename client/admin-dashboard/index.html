@@ -31,12 +31,18 @@
       }
 
       try {
-        const res = await fetch('./src/App.jsx', { cache: 'no-store' });
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        const raw = await res.text();
+        const files = ['./src/ReportsModule.jsx', './src/App.jsx'];
+        const sources = await Promise.all(
+          files.map(async (f) => {
+            const res = await fetch(f + '?t=' + Date.now(), { cache: 'no-store' });
+            if (!res.ok) throw new Error('HTTP ' + res.status + ' loading ' + f);
+            const txt = await res.text();
+            return stripModuleSyntax(txt);
+          })
+        );
         const combinedSource = `
           const { useState, useEffect, useCallback, useMemo, useRef } = React;
-          ${stripModuleSyntax(raw)}
+          ${sources.join('\n')}
           const root = ReactDOM.createRoot(document.getElementById('root'));
           root.render(React.createElement(App));
         `;

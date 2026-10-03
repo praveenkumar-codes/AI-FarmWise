@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { AdminReportsView } from './ReportsModule.jsx';
 
 const API_BASE =
   typeof window !== 'undefined' && window.location.hostname
@@ -13,7 +14,23 @@ const FALLBACK_FARMERS = [
   { id: 5, farmer_name: 'Lakshmi Bai', village: 'Nandyal', crop_variety: 'Groundnut (K-6)', growth_stage: 'Flowering', area_acres: 5.0, soil_moisture: 24.5, satellite_moisture: 25.2, status: 'CRITICAL_DEFICIT', sensor_node: 'ESP32-SIM-NODE-05' },
 ];
 
+const ADMIN_NAV_ITEMS = [
+  { id: 'Dashboard', icon: '🛰️', label: 'Dashboard' },
+  { id: 'Farmers', icon: '👨‍🌾', label: 'Farmers' },
+  { id: 'Farms', icon: '🏡', label: 'Farms' },
+  { id: 'Fields', icon: '🗺️', label: 'Fields' },
+  { id: 'Crops', icon: '🌾', label: 'Crops' },
+  { id: 'Devices', icon: '🔌', label: 'Devices' },
+  { id: 'Agents', icon: '🤖', label: 'Agents' },
+  { id: 'Recommendations', icon: '💡', label: 'Recommendations' },
+  { id: 'Alerts', icon: '⚠️', label: 'Alerts' },
+  { id: 'Tasks', icon: '✅', label: 'Tasks' },
+  { id: 'Reports', icon: '📊', label: 'Reports' },
+  { id: 'Audit Trail', icon: '📜', label: 'Audit Trail' },
+];
+
 export function App() {
+  const [activeNav, setActiveNav] = useState('Dashboard');
   const [farmers, setFarmers] = useState(FALLBACK_FARMERS);
   const [selectedFarmerId, setSelectedFarmerId] = useState(1);
   const [dashboard, setDashboard] = useState(null);
@@ -258,6 +275,13 @@ export function App() {
           </button>
           <button
             type="button"
+            onClick={() => setActiveNav(activeNav === 'Reports' ? 'Dashboard' : 'Reports')}
+            className="px-4 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-black tracking-wider uppercase shadow-lg shadow-cyan-950/60 transition"
+          >
+            📊 {activeNav === 'Reports' ? 'Back to Command Center' : 'Open Farm Reports'}
+          </button>
+          <button
+            type="button"
             disabled={busy}
             onClick={triggerEmergencyStop}
             className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-black tracking-wider uppercase shadow-lg shadow-rose-950/60 transition"
@@ -267,6 +291,40 @@ export function App() {
         </div>
       </header>
 
+      {/* Admin Sidebar / Module Navigation Bar (All 12 Sections) */}
+      <nav
+        aria-label="Admin Sidebar Navigation"
+        className="bg-slate-900/95 border border-slate-800 rounded-2xl p-2 flex flex-wrap items-center gap-1.5 shadow-lg"
+      >
+        {ADMIN_NAV_ITEMS.map((item) => {
+          const isAct = activeNav === item.id;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => setActiveNav(item.id)}
+              className={`px-3 py-1.5 rounded-xl text-xs font-black flex items-center gap-1.5 transition ${
+                isAct
+                  ? 'bg-cyan-600 text-white shadow'
+                  : 'bg-slate-950/80 text-slate-300 hover:text-white hover:bg-slate-800 border border-slate-800'
+              }`}
+            >
+              <span>{item.icon}</span>
+              <span>{item.label}</span>
+            </button>
+          );
+        })}
+      </nav>
+
+      {activeNav === 'Reports' ? (
+        <AdminReportsView
+          apiBase={API_BASE}
+          farmers={farmers}
+          selectedFarmerId={selectedFarmerId}
+          setSelectedFarmerId={setSelectedFarmerId}
+        />
+      ) : (
+        <>
       {/* Requirement 28: AGENTIC DEMO CONTROL BAR */}
       <section className="bg-slate-900 border border-violet-500/40 rounded-2xl p-4 space-y-3 shadow-lg">
         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -847,6 +905,8 @@ export function App() {
           </div>
         </div>
       </div>
+        </>
+      )}
     </div>
   );
 }
